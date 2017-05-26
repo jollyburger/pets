@@ -3,6 +3,7 @@ package pets
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -45,7 +46,7 @@ CHECK:
 			switch connStatus.State {
 			case zk.StateDisconnected:
 				//reconnect
-				servers := strings.Split(connStr, ",")
+				servers := strings.Split(pets.addr, ",")
 				conn, ec, err := zk.Connect(servers, 10*time.Second)
 				if err != nil {
 					break CHECK
@@ -202,13 +203,13 @@ func (pets *Pets) SetNameBatch(shortName string, fullNames []string, values [][]
 }
 
 func (pets *Pets) UpdateNames(shortName string, fullPath string) error {
-	childs, ch, err := pets.GetChildrenWatcher(fullPath)
+	children, ch, err := pets.GetChildrenWatcher(fullPath)
 	if err != nil {
 		return err
 	}
 	fullNames := make([]string, 0)
 	nameNodes := make([][]byte, 0)
-	for _, v := range childs {
+	for _, v := range children {
 		full_node := fullPath + "/" + v
 		data, err := pets.Get(full_node)
 		if err != nil {
@@ -225,6 +226,31 @@ func (pets *Pets) UpdateNames(shortName string, fullPath string) error {
 		}
 	}()
 	return nil
+}
+
+func (pets *Pets) GetOne(shortName string) ([]byte, error) {
+	if shortName == "" {
+		return nil, errors.New("shortname format error")
+	}
+	if _, ok := pets.shortMap[shortName]; !ok {
+		return nil, errors.New("shortname value doesn't exist")
+	}
+	idx := rand.Intn(len(pets.shortMap[shortName]))
+	return pets.nameMap[pets.shortMap[shortName][idx]], nil
+}
+
+func (pets *Pets) GetAll(shortName string) ([][]byte, error) {
+	if shortname == "" {
+		return nil, errors.New("shortname format error")
+	}
+	if _, ok := pets.shortMap[shortName]; !ok {
+		return nil, errors.New("shortname value doesn't exist")
+	}
+	batch_value := make([][]byte, 0)
+	for _, fullname := range pets.shortMap[shortName] {
+		batch_value = append(batch_vaue, pets.nameMap[fullname])
+	}
+	return batch_value, nil
 }
 
 func (pets *Pets) Close() {
