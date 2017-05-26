@@ -240,7 +240,7 @@ func (pets *Pets) GetOne(shortName string) ([]byte, error) {
 }
 
 func (pets *Pets) GetAll(shortName string) ([][]byte, error) {
-	if shortname == "" {
+	if shortName == "" {
 		return nil, errors.New("shortname format error")
 	}
 	if _, ok := pets.shortMap[shortName]; !ok {
@@ -248,7 +248,7 @@ func (pets *Pets) GetAll(shortName string) ([][]byte, error) {
 	}
 	batch_value := make([][]byte, 0)
 	for _, fullname := range pets.shortMap[shortName] {
-		batch_value = append(batch_vaue, pets.nameMap[fullname])
+		batch_value = append(batch_value, pets.nameMap[fullname])
 	}
 	return batch_value, nil
 }
