@@ -23,14 +23,15 @@ type Pets struct {
 
 func InitPetsInstance(connStr string) (*Pets, error) {
 	pets := new(Pets)
-	pets.Addr = connStr
+	pets.addr = connStr
 	pets.shortMap = make(map[string][]string)
 	pets.nameMap = make(map[string][]byte)
 	servers := strings.Split(connStr, ",")
-	pets.conn, ec, err = zk.Connect(servers, 10*time.Second)
+	conn, ec, err := zk.Connect(servers, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
+	pets.conn = conn
 	pets.stopCh = make(chan bool)
 	go pets.CheckConn(ec)
 	return pets, nil
@@ -45,10 +46,11 @@ CHECK:
 			case zk.StateDisconnected:
 				//reconnect
 				servers := strings.Split(connStr, ",")
-				pets.conn, ec, err = zk.Connect(servers, 10*time.Second)
+				conn, ec, err := zk.Connect(servers, 10*time.Second)
 				if err != nil {
 					break CHECK
 				}
+				pets.conn = conn
 				event = ec
 				continue
 			default:
@@ -70,13 +72,13 @@ func (pets *Pets) CreateNode(path string, value []byte) error {
 	var parentPath string
 	paths := strings.Split(path, "/")
 	for _, tmp_path := range paths[1 : len(paths)-1] {
-		parentPath += "/" + v
+		parentPath += "/" + tmp_path
 		exist, _, err := pets.conn.Exists(parentPath)
 		if err != nil {
 			return err
 		}
 		if !exist {
-			_, err = c.conn.Create(parentPath, nil, 0, acl)
+			_, err = pets.conn.Create(parentPath, nil, 0, acl)
 			if err != nil {
 				return err
 			}
@@ -87,29 +89,30 @@ func (pets *Pets) CreateNode(path string, value []byte) error {
 		return err
 	}
 	if !exist {
-		resPath, err = pets.conn.Create(childPath, data, flag, acl)
+		_, err = pets.conn.Create(childPath, value, flag, acl)
 		if err != nil {
 			return err
 		}
 	} else {
 		return errors.New(fmt.Sprintf("children path: %s  exists", childPath))
 	}
+	return nil
 }
 
 func (pets *Pets) SetNode(path string, value []byte) error {
-	exist, stat, err := pets.conn.Exist(path)
+	exist, stat, err := pets.conn.Exists(path)
 	if err != nil {
 		return err
 	}
 	if !exist {
 		return errors.New("path does not exist, can't set value")
 	}
-	_, err := pets.conn.Set(path, value, stat.Version)
+	_, err = pets.conn.Set(path, value, stat.Version)
 	return err
 }
 
 func (pets *Pets) Get(path string) ([]byte, error) {
-	exist, _, err := pets.conn.Exist(path)
+	exist, _, err := pets.conn.Exists(path)
 	if err != nil {
 		return nil, err
 	}
@@ -121,19 +124,19 @@ func (pets *Pets) Get(path string) ([]byte, error) {
 }
 
 func (pets *Pets) GetSelfWatcher(path string) ([]byte, <-chan zk.Event, error) {
-	exist, _, err := pets.conn.Exist(path)
+	exist, _, err := pets.conn.Exists(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !exist {
-		return nil, errors.New("path does not exist, can't get parent watcher")
+		return nil, nil, errors.New("path does not exist, can't get parent watcher")
 	}
 	value, _, event, err := pets.conn.GetW(path)
 	return value, event, err
 }
 
 func (pets *Pets) GetChildren(path string) ([]string, error) {
-	exist, _, err := pets.conn.Exist(path)
+	exist, _, err := pets.conn.Exists(path)
 	if err != nil {
 		return nil, err
 	}
@@ -144,25 +147,25 @@ func (pets *Pets) GetChildren(path string) ([]string, error) {
 	return value, err
 }
 
-func (pets *Pets) GetChildrenWather(path string) ([]string, <-chan zk.Event, error) {
-	exist, _, err := pets.conn.Exist(path)
+func (pets *Pets) GetChildrenWatcher(path string) ([]string, <-chan zk.Event, error) {
+	exist, _, err := pets.conn.Exists(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !exist {
-		return nil, errors.New("path does not exist, can't get children node watcher")
+		return nil, nil, errors.New("path does not exist, can't get children node watcher")
 	}
 	value, _, event, err := pets.conn.ChildrenW(path)
 	return value, event, err
 }
 
 func (pets *Pets) DeleteNode(path string) error {
-	exist, stats, err := pets.conn.Exist(path)
+	exist, stats, err := pets.conn.Exists(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if !exist {
-		return nil, errors.New("path does not exist, can't delete node")
+		return errors.New("path does not exist, can't delete node")
 	}
 	return pets.conn.Delete(path, stats.Version)
 }
@@ -178,7 +181,7 @@ func (pets *Pets) RegisterPet(path string, value []byte) error {
 	}
 	go func() {
 		select {
-		case event := <-ev:
+		case <-ev:
 			pets.RegisterPet(path, value)
 		}
 	}()
@@ -194,16 +197,19 @@ func (pets *Pets) SetNameBatch(shortName string, fullNames []string, values [][]
 	}
 	for k, _ := range fullNames {
 		pets.nameMap[fullNames[k]] = values[k]
-		pets[shortName] = append(nc.MapNameValues[shortName], fullNames[k])
+		pets.shortMap[shortName] = append(pets.shortMap[shortName], fullNames[k])
 	}
 }
 
 func (pets *Pets) UpdateNames(shortName string, fullPath string) error {
 	childs, ch, err := pets.GetChildrenWatcher(fullPath)
+	if err != nil {
+		return err
+	}
 	fullNames := make([]string, 0)
 	nameNodes := make([][]byte, 0)
 	for _, v := range childs {
-		full_node := fullpath + "/" + v
+		full_node := fullPath + "/" + v
 		data, err := pets.Get(full_node)
 		if err != nil {
 			continue
@@ -214,7 +220,7 @@ func (pets *Pets) UpdateNames(shortName string, fullPath string) error {
 	pets.SetNameBatch(shortName, fullNames, nameNodes)
 	go func() {
 		select {
-		case ev := <-ch:
+		case <-ch:
 			pets.UpdateNames(shortName, fullPath)
 		}
 	}()
@@ -222,6 +228,6 @@ func (pets *Pets) UpdateNames(shortName string, fullPath string) error {
 }
 
 func (pets *Pets) Close() {
-	pets.stopch <- true
+	pets.stopCh <- true
 	pets.conn.Close()
 }
