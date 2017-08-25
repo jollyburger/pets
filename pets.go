@@ -16,6 +16,7 @@ type Pets struct {
 	//name container
 	shortMap map[string][]string //short name to long names
 	nameMap  map[string][]byte   //long name to value
+	children map[string][]string //long name to children
 	//zk instance
 	addr   string   //zk address
 	conn   *zk.Conn //zookeeper instance connection
@@ -27,6 +28,7 @@ func InitPetsInstance(connStr string) (*Pets, error) {
 	pets.addr = connStr
 	pets.shortMap = make(map[string][]string)
 	pets.nameMap = make(map[string][]byte)
+	pets.children = make(map[string][]string)
 	servers := strings.Split(connStr, ",")
 	conn, ec, err := zk.Connect(servers, 10*time.Second)
 	if err != nil {
@@ -106,7 +108,8 @@ func (pets *Pets) SetNode(path string, value []byte) error {
 		return err
 	}
 	if !exist {
-		return errors.New("path does not exist, can't set value")
+		err = pets.CreateNode(path, value)
+		return err
 	}
 	_, err = pets.conn.Set(path, value, stat.Version)
 	return err
@@ -189,16 +192,18 @@ func (pets *Pets) RegisterPet(path string, value []byte) error {
 	return nil
 }
 
-func (pets *Pets) SetNameBatch(shortName string, fullNames []string, values [][]byte) {
+func (pets *Pets) SetNameBatch(shortName string, fullNames []string, values [][]byte, chs []string) {
 	pets.Lock()
 	defer pets.Unlock()
 	pets.shortMap[shortName] = make([]string, 0)
-	if len(fullNames) == 0 || len(values) == 0 {
+	pets.children[shortName] = make([]string, 0)
+	if len(fullNames) == 0 || len(values) == 0 || len(chs) == 0 {
 		return
 	}
 	for k, _ := range fullNames {
 		pets.nameMap[fullNames[k]] = values[k]
 		pets.shortMap[shortName] = append(pets.shortMap[shortName], fullNames[k])
+		pets.children[shortName] = append(pets.children[shortName], chs[k])
 	}
 }
 
@@ -209,6 +214,7 @@ func (pets *Pets) UpdateNames(shortName string, fullPath string) error {
 	}
 	fullNames := make([]string, 0)
 	nameNodes := make([][]byte, 0)
+	chs := make([]string, 0)
 	for _, v := range children {
 		full_node := fullPath + "/" + v
 		data, err := pets.Get(full_node)
@@ -217,8 +223,9 @@ func (pets *Pets) UpdateNames(shortName string, fullPath string) error {
 		}
 		fullNames = append(fullNames, full_node)
 		nameNodes = append(nameNodes, data)
+		chs = append(chs, v)
 	}
-	pets.SetNameBatch(shortName, fullNames, nameNodes)
+	pets.SetNameBatch(shortName, fullNames, nameNodes, chs)
 	go func() {
 		select {
 		case <-ch:
@@ -251,6 +258,27 @@ func (pets *Pets) GetAll(shortName string) ([][]byte, error) {
 		batch_value = append(batch_value, pets.nameMap[fullname])
 	}
 	return batch_value, nil
+}
+
+func (pets *Pets) GetOneName(shortName string) (string, error) {
+	if shortName == "" {
+		return "", errors.New("shortname format error")
+	}
+	if _, ok := pets.children[shortName]; !ok {
+		return "", errors.New("shortname value doesn't exist")
+	}
+	idx := rand.Intn(len(pets.children[shortName]))
+	return pets.children[shortName][idx], nil
+}
+
+func (pets *Pets) GetNames(shortName string) ([]string, error) {
+	if shortName == "" {
+		return nil, errors.New("shortname format error")
+	}
+	if _, ok := pets.children[shortName]; !ok {
+		return nil, errors.New("shortname value doesn't exist")
+	}
+	return pets.children[shortName], nil
 }
 
 func (pets *Pets) Close() {
